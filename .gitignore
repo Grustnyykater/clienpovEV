@@ -1,0 +1,29 @@
+# Virtual environment
+.venv/
+venv/
+__pycache__/
+*.pyc
+.ipynb_checkpoints/
+
+# OS / IDE
+.DS_Store
+.idea/
+.vscode/
+
+# Raw data (large) — keep local copy; document source in README
+data/*.csv
+
+# Heavy generated exports (rebuild via scripts/run_analysis.py)
+outputs/powerbi_orders.csv
+outputs/powerbi_order_items.csv
+outputs/rfm_customers.csv
+
+# Power BI binary (optional local artifact)
+powerbi/*.pbix
+
+# Secrets / local DB
+.env
+*.log
+
+# Personal interview prep (local only)
+INTERVIEW_GUIDE.md

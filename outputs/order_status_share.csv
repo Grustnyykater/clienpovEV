@@ -1,0 +1,9 @@
+order_status,pct
+delivered,97.02
+shipped,1.11
+canceled,0.63
+unavailable,0.61
+invoiced,0.32
+processing,0.3
+created,0.01
+approved,0.0

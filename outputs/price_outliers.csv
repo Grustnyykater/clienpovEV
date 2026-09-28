@@ -1,0 +1,9 @@
+,value
+price_median,74.9
+price_mean,119.98
+price_p95,349.0
+price_p99,887.08
+iqr_upper,275.57
+outlier_items,8162.0
+outlier_pct,7.41
+outlier_revenue_share_pct,35.31

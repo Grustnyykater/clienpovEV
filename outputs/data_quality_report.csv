@@ -1,0 +1,9 @@
+table,rows,cols,duplicate_rows,null_cells,null_pct
+customers,99441,5,0,0,0.0
+orders,99441,8,0,4908,0.62
+items,112650,7,0,0,0.0
+payments,103886,5,0,0,0.0
+reviews,99224,7,0,145903,21.01
+products,32951,9,0,2448,0.83
+sellers,3095,4,0,0,0.0
+translation,71,2,0,0,0.0
