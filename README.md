@@ -1,5 +1,5 @@
 # E-commerce Analytics: продажи, клиенты и повторные покупки (Olist)
-
+ 
 Продуктовая аналитика публичного датасета [Brazilian E-Commerce Public Dataset by Olist](https://www.kaggle.com/datasets/olistbr/brazilian-ecommerce) (~100k заказов).
 
 **Стек:** SQL · PostgreSQL · Python (Pandas, NumPy) · Power BI
