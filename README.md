@@ -140,12 +140,6 @@ psql -U postgres -d olist_ecommerce -f sql/03_analytics_queries.sql
 
 ---
 
-## Формулировка для резюме
-
-> E-commerce Analytics (Olist) — SQL, PostgreSQL, Python (Pandas/NumPy), Power BI.  
-> Проанализировал ~100K заказов: EDA, GMV/AOV/repeat rate, RFM и когортный retention; собрал Power BI-дашборд. Выявил концентрацию выручки по категориям/регионам, влияние просроченной доставки на оценки и приоритетные сегменты для роста повторных покупок.
-
----
 
 ## Источник данных
 
