@@ -1,0 +1,68 @@
+/// Когортный retention: доля когорты, купившей снова через N месяцев (outputs/retention_heatmap.csv).
+table Retention
+	lineageTag: 5e9da9b3-2d02-4605-95d5-9fbd4fba1184
+
+	measure Вернулись = AVERAGE ( Retention[retention] )
+		formatString: 0.00%
+		lineageTag: 449d5912-4be5-4b08-b461-d9c19e7622c1
+
+	/// Цвет ячейки тепловой карты retention (одна синяя шкала, светлее = меньше).
+	measure 'Цвет retention' =
+			VAR r = [Вернулись]
+			RETURN
+			    SWITCH (
+			        TRUE (),
+			        ISBLANK ( r ), BLANK (),
+			        r >= 0.006, "#5598E7",
+			        r >= 0.004, "#9EC5F4",
+			        r >= 0.002, "#CDE2FB",
+			        "#EEF5FD"
+			    )
+		isHidden
+
+	column Когорта
+		dataType: string
+		lineageTag: 570585b2-8295-4b65-b4b2-25c67ea7429c
+		summarizeBy: none
+		sourceColumn: Когорта
+
+	column period
+		dataType: int64
+		isHidden
+		formatString: 0
+		lineageTag: 6c6cd811-1c83-4409-bab1-8663dec648cd
+		summarizeBy: none
+		sourceColumn: period
+
+	column 'Месяц после покупки'
+		dataType: string
+		lineageTag: e947cff3-5dfd-4eff-a36f-2fc51f8388d4
+		summarizeBy: none
+		sourceColumn: Месяц после покупки
+		sortByColumn: period
+
+	column retention
+		dataType: double
+		isHidden
+		lineageTag: 5ad9d57b-fe5b-4e84-8952-65ac7030a95a
+		summarizeBy: none
+		sourceColumn: retention
+
+	partition Retention = m
+		mode: import
+		source =
+				let
+				    Source = Csv.Document(File.Contents(DataFolder & "retention_heatmap.csv"), [Delimiter = ",", Encoding = 65001, QuoteStyle = QuoteStyle.Csv]),
+				    Promoted = Table.PromoteHeaders(Source, [PromoteAllScalars = true]),
+				    Named = Table.RenameColumns(Promoted, {{Table.ColumnNames(Promoted){0}, "Когорта"}}),
+				    Unpivoted = Table.UnpivotOtherColumns(Named, {"Когорта"}, "period", "value"),
+				    Observed = Table.SelectRows(Unpivoted, each [value] <> null and [value] <> ""),
+				    Typed = Table.TransformColumnTypes(Observed, {{"Когорта", type text}, {"period", Int64.Type}, {"value", type number}}, "en-US"),
+				    WithLabel = Table.AddColumn(Typed, "Месяц после покупки", each "M" & Text.From([period]), type text),
+				    WithShare = Table.AddColumn(WithLabel, "retention", each [value] / 100, type number),
+				    Result = Table.RemoveColumns(WithShare, {"value"})
+				in
+				    Result
+
+	annotation PBI_ResultType = Table
+

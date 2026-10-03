@@ -1,0 +1,38 @@
+table Calendar
+	lineageTag: 229a32c4-324e-4bb1-89a3-4fa48f3d678e
+	dataCategory: Time
+
+	column Date
+		dataType: dateTime
+		isKey
+		formatString: Short Date
+		lineageTag: d650d187-60e5-4350-ad28-26218fe320e5
+		summarizeBy: none
+		isNameInferred
+		sourceColumn: [Date]
+
+	column Год
+		dataType: int64
+		formatString: 0
+		lineageTag: 865d4882-c1b1-42a0-830c-f90f168260ae
+		summarizeBy: none
+		isNameInferred
+		sourceColumn: [Год]
+
+	column Месяц
+		dataType: dateTime
+		formatString: MMM yyyy
+		lineageTag: 25ae4833-5fe0-4b0e-a1a9-0f6e6b461616
+		summarizeBy: none
+		isNameInferred
+		sourceColumn: [Месяц]
+
+	partition Calendar = calculated
+		mode: import
+		source =
+				ADDCOLUMNS (
+				    CALENDAR ( DATE ( 2016, 9, 1 ), DATE ( 2018, 8, 31 ) ),
+				    "Год", YEAR ( [Date] ),
+				    "Месяц", DATE ( YEAR ( [Date] ), MONTH ( [Date] ), 1 )
+				)
+

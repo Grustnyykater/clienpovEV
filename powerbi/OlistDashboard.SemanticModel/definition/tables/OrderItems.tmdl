@@ -1,0 +1,79 @@
+/// Позиции доставленных заказов (outputs/powerbi_order_items.csv).
+table OrderItems
+	lineageTag: e398fce0-cf35-44f5-92b2-ea7540a0bca6
+
+	measure 'Выручка по позициям' = SUM ( OrderItems[price] )
+		formatString: R$ #,0
+		lineageTag: 16d4010a-d30a-4d69-b7f0-f616bd37466c
+
+	measure 'Доля GMV' = DIVIDE ( [Выручка по позициям], CALCULATE ( [Выручка по позициям], REMOVEFILTERS ( OrderItems[Категория] ) ) )
+		formatString: 0.0%
+		lineageTag: 9f31432f-4df0-47de-9b8f-4bd56f93b937
+
+	column order_id
+		dataType: string
+		isHidden
+		lineageTag: 8cbb6a72-2438-40e9-8741-e8ec64faf2f9
+		summarizeBy: none
+		sourceColumn: order_id
+
+	column order_item_id
+		dataType: int64
+		isHidden
+		formatString: 0
+		lineageTag: ebdc656c-736d-4664-a47a-c3d3e0781c8c
+		summarizeBy: none
+		sourceColumn: order_item_id
+
+	column product_id
+		dataType: string
+		isHidden
+		lineageTag: 74314982-5f9a-49d8-ac1b-a20d957a8729
+		summarizeBy: none
+		sourceColumn: product_id
+
+	column seller_id
+		dataType: string
+		isHidden
+		lineageTag: a3c0b35b-a6c4-46a3-9b71-e8297f0ba23a
+		summarizeBy: none
+		sourceColumn: seller_id
+
+	column Категория
+		dataType: string
+		lineageTag: 7c7a0df9-6fd1-47ee-9581-2821a386a169
+		summarizeBy: none
+		sourceColumn: Категория
+
+	column price
+		dataType: double
+		isHidden
+		lineageTag: ebcf3ab6-bd1d-4898-81cd-b05041b07736
+		summarizeBy: none
+		sourceColumn: price
+
+	column freight_value
+		dataType: double
+		isHidden
+		lineageTag: de251bcf-3dcd-4451-97e9-79c1711f5988
+		summarizeBy: none
+		sourceColumn: freight_value
+
+	partition OrderItems = m
+		mode: import
+		source =
+				let
+				    Source = Csv.Document(File.Contents(DataFolder & "powerbi_order_items.csv"), [Delimiter = ",", Encoding = 65001, QuoteStyle = QuoteStyle.Csv]),
+				    Promoted = Table.PromoteHeaders(Source, [PromoteAllScalars = true]),
+				    Selected = Table.SelectColumns(Promoted, {"order_id", "order_item_id", "product_id", "seller_id", "category", "price", "freight_value"}),
+				    Typed = Table.TransformColumnTypes(Selected, {
+				        {"order_id", type text}, {"order_item_id", Int64.Type}, {"product_id", type text},
+				        {"seller_id", type text}, {"category", type text}, {"price", type number}, {"freight_value", type number}
+				    }, "en-US"),
+				    Pretty = Table.TransformColumns(Typed, {{"category", each Text.Replace(_, "_", " "), type text}}),
+				    Renamed = Table.RenameColumns(Pretty, {{"category", "Категория"}})
+				in
+				    Renamed
+
+	annotation PBI_ResultType = Table
+

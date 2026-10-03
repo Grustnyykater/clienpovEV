@@ -1,0 +1,24 @@
+model Model
+	culture: ru-RU
+	defaultPowerBIDataSourceVersion: powerBI_V3
+	discourageImplicitMeasures
+	sourceQueryCulture: en-US
+	dataAccessOptions
+		legacyRedirects
+		returnErrorValuesAsNull
+
+queryGroup Parameters
+
+	annotation PBI_QueryGroupOrder = 0
+
+annotation __PBI_TimeIntelligenceEnabled = 0
+
+annotation PBI_QueryOrder = ["DataFolder","Orders","OrderItems","Retention"]
+
+annotation PBI_ProTooling = ["DevMode"]
+
+ref table Orders
+ref table OrderItems
+ref table Calendar
+ref table Retention
+

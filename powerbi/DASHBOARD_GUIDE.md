@@ -1,73 +1,58 @@
-# Power BI Dashboard Guide — Olist E-Commerce Analytics
+# Power BI: модель и отчёт
 
-## Goal
-One interactive dashboard with **3 pages** (not 15). Import cleaned CSVs from `outputs/`.
+Отчёт `OlistDashboard` хранится в формате **PBIP**: модель описана в TMDL, отчёт — в PBIR. Это текстовые файлы, поэтому изменения мер и визуалов видны в git.
 
-## Data sources (Get Data → Text/CSV)
-
-| File | Role |
-|------|------|
-| `outputs/powerbi_orders.csv` | Fact: orders + RFM segment + delivery flags |
-| `outputs/powerbi_order_items.csv` | Fact: items / categories |
-| `outputs/rfm_segments.csv` | Dim/summary: segment KPIs |
-| `outputs/monthly_sales.csv` | Optional pre-agg for overview charts |
-| `outputs/category_sales.csv` | Optional pre-agg |
-| `outputs/region_sales.csv` | Optional pre-agg |
-| `outputs/retention_heatmap.csv` | Retention matrix |
-
-**Relationships (Model view)**
-- `powerbi_order_items[order_id]` → `powerbi_orders[order_id]` (many-to-one)
-- Optional: create a Calendar table from `order_purchase_timestamp`
-
-## Page 1 — Overview
-**KPI cards**
-- Revenue = `SUM(powerbi_orders[revenue])`
-- Orders = `DISTINCTCOUNT(powerbi_orders[order_id])`
-- Customers = `DISTINCTCOUNT(powerbi_orders[customer_unique_id])`
-- AOV = `DIVIDE([Revenue], [Orders])`
-
-**Visuals**
-- Line chart: Revenue by `year_month`
-- Clustered bar: Top states by revenue
-- Donut: order share by top categories (from items table)
-
-**Filters (slicers)**
-- `year_month`, `customer_state`, `segment`
-
-## Page 2 — Customers
-**Visuals**
-- Bar: customers by RFM `segment`
-- Bar: revenue by RFM `segment`
-- Card: Repeat purchase rate  
-  `DIVIDE( CALCULATE(DISTINCTCOUNT(customer_unique_id), FILTER(... frequency logic ...)) )`  
-  Or import `kpi_summary.csv` and show the ready metric.
-- Matrix / heatmap: import `retention_heatmap.csv` as a matrix visual (cohort × period)
-
-## Page 3 — Operations
-**Visuals**
-- Card: Average delivery days = `AVERAGE(powerbi_orders[delivery_days])`
-- Card: Late delivery rate = `AVERAGE( INT(powerbi_orders[is_late]) )` (True=1)
-- Bar: late rate by `customer_state`
-- Bar: revenue by `category` (from items)
-- Optional: map of Brazil by state if you add a shape map
-
-## DAX snippets
-
-```dax
-Revenue = SUM(powerbi_orders[revenue])
-Orders = DISTINCTCOUNT(powerbi_orders[order_id])
-Customers = DISTINCTCOUNT(powerbi_orders[customer_unique_id])
-AOV = DIVIDE([Revenue], [Orders])
-Late Delivery Rate = AVERAGE(powerbi_orders[is_late] + 0)
-Avg Delivery Days = AVERAGE(powerbi_orders[delivery_days])
+```text
+powerbi/
+├── OlistDashboard.pbip                  # точка входа: открыть в Power BI Desktop
+├── OlistDashboard.SemanticModel/definition/
+│   ├── expressions.tmdl                 # параметр DataFolder — путь к outputs/
+│   ├── relationships.tmdl
+│   └── tables/                          # Orders, OrderItems, Calendar, Retention
+└── OlistDashboard.Report/definition/pages/   # 3 страницы, визуалы — по папке на каждый
 ```
 
-## Design tips for interviews
-- Keep one clear story per page.
-- Always sync slicers across pages.
-- Add a short text box on Overview with 2–3 business insights from `outputs/key_findings.md`.
-- Export PDF screenshot of the dashboard for GitHub README.
+## Как открыть
 
-## File to commit
-Save your `.pbix` as `powerbi/olist_ecommerce_dashboard.pbix` after building locally
-(Power BI Desktop is Windows/Microsoft Store; on Mac use a Windows VM or Power BI Service upload of CSVs).
+1. `python scripts/run_analysis.py` — создаёт `outputs/powerbi_orders.csv`, `outputs/powerbi_order_items.csv`, `outputs/retention_heatmap.csv`.
+2. `python scripts/configure_powerbi.py` — записывает в параметр `DataFolder` путь к `outputs\` этой копии репозитория.
+3. Открыть `OlistDashboard.pbip` в Power BI Desktop и нажать «Обновить».
+
+## Модель
+
+| Таблица | Источник | Гранулярность |
+| --- | --- | --- |
+| `Orders` | `powerbi_orders.csv` | доставленный заказ: выручка, срок доставки, опоздание, оценка, RFM-сегмент клиента |
+| `OrderItems` | `powerbi_order_items.csv` | позиция заказа: категория, цена |
+| `Calendar` | вычисляемая (DAX) | день, 2016-09-01 … 2018-08-31 |
+| `Retention` | `retention_heatmap.csv` (unpivot в Power Query) | когорта × месяц после первой покупки |
+
+Связи: `OrderItems[order_id]` → `Orders[order_id]`, `Orders[order_date]` → `Calendar[Date]` (многие к одному, фильтр в одну сторону). Поэтому срезы по штату и сегменту действуют и на категории.
+
+Power Query типизирует колонки с культурой `en-US`: в CSV десятичный разделитель — точка, а у Power BI с русской локалью — запятая.
+
+## Меры
+
+| Мера | DAX |
+| --- | --- |
+| Выручка | `SUM(Orders[revenue])` |
+| Заказы | `COUNTROWS(Orders)` |
+| Клиенты | `DISTINCTCOUNT(Orders[customer_unique_id])` |
+| Средний чек | `DIVIDE([Выручка], [Заказы])` |
+| Повторные покупки | доля клиентов с 2+ заказами: `ADDCOLUMNS(VALUES(customer), …)` + `FILTER` |
+| Доля опозданий | `AVERAGE(Orders[is_late])` — пустые значения (заказ без даты доставки) не учитываются |
+| Доля опозданий (штаты 100+) | `IF([Заказы] >= 100, [Доля опозданий])` — для рейтинга штатов |
+| Срок доставки, дн. / Средняя оценка | `AVERAGE` по заказам |
+| Негативные отзывы | доля оценок 1–2 среди заказов с отзывом |
+| Доля клиентов / Доля выручки | доля сегмента: `DIVIDE(x, CALCULATE(x, REMOVEFILTERS(Orders[RFM-сегмент], …)))` |
+| Выручка по позициям / Доля GMV | то же на уровне категорий |
+| Вернулись | `AVERAGE(Retention[retention])` |
+| Цвет retention | цвет ячейки тепловой карты (условное форматирование матрицы) |
+
+Без фильтров меры совпадают с `outputs/kpi_summary.csv` и SQL-запросами: выручка R$ 13 221 498, 96 478 заказов, 93 358 клиентов, опоздания 6,8%, повторные покупки 3,0%.
+
+## Страницы
+
+- **Обзор** — KPI, выручка по месяцам (2017–2018), топ-12 категорий, топ-10 штатов; срезы по штату и RFM-сегменту.
+- **Клиенты** — RFM-сегменты (доля клиентов и выручки), матрица когортного retention M1–M6 с цветовой шкалой.
+- **Доставка** — доля опозданий по штатам и месяцам, средняя оценка в зависимости от опоздания.

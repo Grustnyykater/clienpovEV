@@ -1,0 +1,248 @@
+/// Доставленные заказы: одна строка на заказ (outputs/powerbi_orders.csv).
+table Orders
+	lineageTag: dad10492-0f62-471b-86ac-d10df8b3c063
+
+	measure Выручка = SUM ( Orders[revenue] )
+		formatString: R$ #,0
+		lineageTag: 28658da0-69a6-42fb-a962-5d96cff416e1
+
+	measure Заказы = COUNTROWS ( Orders )
+		formatString: #,0
+		lineageTag: 16fae636-d546-4c54-b938-61f3d1c4fd40
+
+	measure Клиенты = DISTINCTCOUNT ( Orders[customer_unique_id] )
+		formatString: #,0
+		lineageTag: ba5134e0-9bc9-4d39-b05a-0178d76f5131
+
+	measure 'Средний чек' = DIVIDE ( [Выручка], [Заказы] )
+		formatString: R$ #,0
+		lineageTag: 12ddd2a9-c533-4385-b8e6-c5f5cd15d28a
+
+	/// Доля клиентов с 2+ доставленными заказами.
+	measure 'Повторные покупки' =
+			VAR per_customer =
+			    ADDCOLUMNS (
+			        VALUES ( Orders[customer_unique_id] ),
+			        "@orders", CALCULATE ( COUNTROWS ( Orders ) )
+			    )
+			RETURN
+			    DIVIDE ( COUNTROWS ( FILTER ( per_customer, [@orders] >= 2 ) ), COUNTROWS ( per_customer ) )
+		formatString: 0.0%
+		lineageTag: 0eca9194-fe43-4e14-853e-40d650068dc5
+
+	/// Доставлено позже обещанной даты (сравнение по датам).
+	measure 'Доля опозданий' = AVERAGE ( Orders[is_late] )
+		formatString: 0.0%
+		lineageTag: f235e784-0d33-489e-aabb-46ddb923f801
+
+	/// Для рейтинга штатов: только штаты с 100+ заказами.
+	measure 'Доля опозданий (штаты 100+)' = IF ( [Заказы] >= 100, [Доля опозданий] )
+		formatString: 0.0%
+		lineageTag: e5090300-ba79-4a2d-b0d8-d666ae315a66
+
+	measure 'Опоздавшие заказы' = SUM ( Orders[is_late] )
+		formatString: #,0
+		lineageTag: 1feb14da-06be-4e6f-9d21-4d27be03a53d
+
+	measure 'Срок доставки, дн.' = AVERAGE ( Orders[delivery_days] )
+		formatString: 0.0
+		lineageTag: 5f9cc1d0-3995-4f47-8ce9-2d2ec2e6c3e7
+
+	measure 'Средняя оценка' = AVERAGE ( Orders[review_score] )
+		formatString: 0.00
+		lineageTag: ab7d7efb-230e-4043-bf94-1997114ecc14
+
+	/// Доля заказов с оценкой 1–2 среди заказов с отзывом.
+	measure 'Негативные отзывы' =
+			DIVIDE (
+			    CALCULATE ( COUNTROWS ( Orders ), Orders[review_score] <= 2 ),
+			    CALCULATE ( COUNTROWS ( Orders ), NOT ISBLANK ( Orders[review_score] ) )
+			)
+		formatString: 0%
+		lineageTag: caa447cc-b6a8-42e6-a57b-b39de846f4ee
+
+	measure 'Доля клиентов' = DIVIDE ( [Клиенты], CALCULATE ( [Клиенты], REMOVEFILTERS ( Orders[RFM-сегмент], Orders[segment_order] ) ) )
+		formatString: 0.0%
+		lineageTag: 210327ad-a983-4054-bb85-789268fdf873
+
+	measure 'Доля выручки' = DIVIDE ( [Выручка], CALCULATE ( [Выручка], REMOVEFILTERS ( Orders[RFM-сегмент], Orders[segment_order] ) ) )
+		formatString: 0.0%
+		lineageTag: 465e346d-7f55-4b40-b542-c0bbf168c6f0
+
+	column order_id
+		dataType: string
+		isHidden
+		lineageTag: 150903d2-167b-4130-8d8f-7fa54f8b0b69
+		summarizeBy: none
+		sourceColumn: order_id
+
+	column customer_unique_id
+		dataType: string
+		isHidden
+		lineageTag: 1bc00d2c-0fc2-46e1-84cb-ce77575331d2
+		summarizeBy: none
+		sourceColumn: customer_unique_id
+
+	column Штат
+		dataType: string
+		lineageTag: deb84722-6930-421d-b67a-ff504e21ba31
+		summarizeBy: none
+		sourceColumn: Штат
+
+	column order_purchase_timestamp
+		dataType: dateTime
+		isHidden
+		formatString: General Date
+		lineageTag: ce2d42df-3105-425d-8a7c-5633eb83c5ad
+		summarizeBy: none
+		sourceColumn: order_purchase_timestamp
+
+	column order_date
+		dataType: dateTime
+		isHidden
+		formatString: Short Date
+		lineageTag: 6b547638-19ad-45e8-92fc-73be40ab4f52
+		summarizeBy: none
+		sourceColumn: order_date
+
+		annotation UnderlyingDateTimeDataType = Date
+
+	column revenue
+		dataType: double
+		isHidden
+		lineageTag: e0a72ef5-67ac-4337-960b-1fb64a5da31a
+		summarizeBy: none
+		sourceColumn: revenue
+
+	column freight
+		dataType: double
+		isHidden
+		lineageTag: d5574974-cf8e-4ed2-ac51-16a476e694c3
+		summarizeBy: none
+		sourceColumn: freight
+
+	column items
+		dataType: int64
+		isHidden
+		formatString: 0
+		lineageTag: ed2cd9b5-f394-44ea-a3eb-caaadc46fe8f
+		summarizeBy: none
+		sourceColumn: items
+
+	column delivery_days
+		dataType: double
+		isHidden
+		lineageTag: cbbd52b5-cad4-4629-a950-fc45dd4afdb1
+		summarizeBy: none
+		sourceColumn: delivery_days
+
+	column delay_days
+		dataType: double
+		isHidden
+		lineageTag: d61b25c8-9a4b-4eeb-990b-1cd445a207af
+		summarizeBy: none
+		sourceColumn: delay_days
+
+	column is_late
+		dataType: int64
+		isHidden
+		formatString: 0
+		lineageTag: 48bee181-36a5-4f89-95e3-5b3e36330840
+		summarizeBy: none
+		sourceColumn: is_late
+
+	column delay_bucket
+		dataType: string
+		isHidden
+		lineageTag: 5a2b931a-a196-4735-8d55-beba8917f422
+		summarizeBy: none
+		sourceColumn: delay_bucket
+
+	column review_score
+		dataType: double
+		isHidden
+		lineageTag: 5d7f3886-f377-4644-9c65-a5371bc0b00f
+		summarizeBy: none
+		sourceColumn: review_score
+
+	column RFM-сегмент
+		dataType: string
+		lineageTag: ff4686e0-f38a-4860-a178-11b6214441e2
+		summarizeBy: none
+		sourceColumn: RFM-сегмент
+		sortByColumn: segment_order
+
+	column R
+		dataType: int64
+		isHidden
+		formatString: 0
+		lineageTag: 0acb9e31-e3d2-426b-a885-7704d4069240
+		summarizeBy: none
+		sourceColumn: R
+
+	column F
+		dataType: int64
+		isHidden
+		formatString: 0
+		lineageTag: 7d0bdbbf-322e-4ec8-a6b7-b1c940ecdd58
+		summarizeBy: none
+		sourceColumn: F
+
+	column M
+		dataType: int64
+		isHidden
+		formatString: 0
+		lineageTag: 6d2ee10d-609e-4c10-b954-bd11ed60e664
+		summarizeBy: none
+		sourceColumn: M
+
+	column Опоздание
+		dataType: string
+		lineageTag: 2d017ab1-33a4-4cbb-922d-44f35e6357ef
+		summarizeBy: none
+		sourceColumn: Опоздание
+		sortByColumn: delay_order
+
+	column delay_order
+		dataType: int64
+		isHidden
+		formatString: 0
+		lineageTag: 45a408d7-2405-4f65-8a84-67be962f1249
+		summarizeBy: none
+		sourceColumn: delay_order
+
+	column segment_order
+		dataType: int64
+		isHidden
+		formatString: 0
+		lineageTag: f03b9573-9b86-435d-9f16-53cdd9442881
+		summarizeBy: none
+		sourceColumn: segment_order
+
+	partition Orders = m
+		mode: import
+		source =
+				let
+				    Source = Csv.Document(File.Contents(DataFolder & "powerbi_orders.csv"), [Delimiter = ",", Encoding = 65001, QuoteStyle = QuoteStyle.Csv]),
+				    Promoted = Table.PromoteHeaders(Source, [PromoteAllScalars = true]),
+				    Typed = Table.TransformColumnTypes(Promoted, {
+				        {"order_id", type text}, {"customer_unique_id", type text}, {"customer_state", type text},
+				        {"order_purchase_timestamp", type datetime}, {"revenue", type number}, {"freight", type number},
+				        {"items", Int64.Type}, {"delivery_days", type number}, {"delay_days", type number},
+				        {"is_late", Int64.Type}, {"delay_bucket", type text}, {"review_score", type number},
+				        {"segment", type text}, {"R", Int64.Type}, {"F", Int64.Type}, {"M", Int64.Type}
+				    }, "en-US"),
+				    Removed = Table.RemoveColumns(Typed, {"year_month"}),
+				    WithDate = Table.AddColumn(Removed, "order_date", each DateTime.Date([order_purchase_timestamp]), type date),
+				    DelayLabels = [on_time = "в срок", late_1_3d = "1–3 дня", late_4_7d = "4–7 дней", late_8d_plus = "8+ дней"],
+				    DelayOrder = [on_time = 1, late_1_3d = 2, late_4_7d = 3, late_8d_plus = 4],
+				    WithDelay = Table.AddColumn(WithDate, "Опоздание", each Record.FieldOrDefault(DelayLabels, if [delay_bucket] = null then "" else [delay_bucket], "нет данных"), type text),
+				    WithDelayOrder = Table.AddColumn(WithDelay, "delay_order", each Record.FieldOrDefault(DelayOrder, if [delay_bucket] = null then "" else [delay_bucket], 9), Int64.Type),
+				    Segments = {"Champions", "At Risk", "New High-Value", "New", "Lapsed High-Value", "Lapsed"},
+				    WithSegmentOrder = Table.AddColumn(WithDelayOrder, "segment_order", each List.PositionOf(Segments, [segment]) + 1, Int64.Type),
+				    Renamed = Table.RenameColumns(WithSegmentOrder, {{"customer_state", "Штат"}, {"segment", "RFM-сегмент"}})
+				in
+				    Renamed
+
+	annotation PBI_ResultType = Table
+

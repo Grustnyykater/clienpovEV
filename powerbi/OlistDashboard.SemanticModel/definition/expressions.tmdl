@@ -1,0 +1,9 @@
+/// Папка с выгрузками пайплайна (outputs/ в корне репозитория), со слешем в конце.
+expression DataFolder = "D:\Desktop\4 курс\сайд проекты\clienpovEV\outputs\" meta [IsParameterQuery=true, Type="Text", IsParameterQueryRequired=true]
+	lineageTag: 49aa08b6-8cf2-46d4-9ce6-4be972f8a04e
+	queryGroup: Parameters
+
+	annotation PBI_NavigationStepName = Navigation
+
+	annotation PBI_ResultType = Text
+

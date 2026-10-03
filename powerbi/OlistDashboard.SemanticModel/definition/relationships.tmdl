@@ -1,0 +1,8 @@
+relationship 5b0f3c2e-7a41-4d8e-9c1a-1f2e3d4c5b01
+	fromColumn: OrderItems.order_id
+	toColumn: Orders.order_id
+
+relationship 5b0f3c2e-7a41-4d8e-9c1a-1f2e3d4c5b02
+	fromColumn: Orders.order_date
+	toColumn: Calendar.Date
+
