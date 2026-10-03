@@ -1,8 +1,7 @@
 -- Olist E-Commerce Analytics — PostgreSQL schema
--- Database: olist_ecommerce
-
-CREATE DATABASE olist_ecommerce;
-\c olist_ecommerce;
+-- Usage (from the repo root):
+--   createdb -U postgres olist_ecommerce
+--   psql -U postgres -d olist_ecommerce -f sql/01_schema.sql
 
 -- Drop existing tables (safe re-run)
 DROP TABLE IF EXISTS order_reviews CASCADE;
@@ -16,8 +15,8 @@ DROP TABLE IF EXISTS geolocation CASCADE;
 DROP TABLE IF EXISTS category_translation CASCADE;
 
 CREATE TABLE customers (
-    customer_id              VARCHAR(50) PRIMARY KEY,
-    customer_unique_id       VARCHAR(50) NOT NULL,
+    customer_id              VARCHAR(50) PRIMARY KEY,  -- one id per order (!)
+    customer_unique_id       VARCHAR(50) NOT NULL,     -- the real person
     customer_zip_code_prefix VARCHAR(10),
     customer_city            VARCHAR(100),
     customer_state           VARCHAR(5)
@@ -45,6 +44,7 @@ CREATE TABLE orders (
 CREATE TABLE products (
     product_id                 VARCHAR(50) PRIMARY KEY,
     product_category_name      VARCHAR(100),
+    -- column names keep the typo ("lenght") from the source CSV
     product_name_lenght        INTEGER,
     product_description_lenght INTEGER,
     product_photos_qty         INTEGER,
@@ -80,6 +80,7 @@ CREATE TABLE order_payments (
     payment_value        NUMERIC(12, 2)
 );
 
+-- review_id is not unique in the source data, so no PK here
 CREATE TABLE order_reviews (
     review_id               VARCHAR(50),
     order_id                VARCHAR(50) REFERENCES orders(order_id),
@@ -104,4 +105,5 @@ CREATE INDEX idx_items_seller ON order_items(seller_id);
 CREATE INDEX idx_customers_unique ON customers(customer_unique_id);
 CREATE INDEX idx_customers_state ON customers(customer_state);
 CREATE INDEX idx_payments_order ON order_payments(order_id);
+CREATE INDEX idx_reviews_order ON order_reviews(order_id);
 CREATE INDEX idx_products_category ON products(product_category_name);

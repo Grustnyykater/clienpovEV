@@ -1,49 +1,25 @@
--- Load Olist CSV files into PostgreSQL
--- Adjust the path below to your local project path before running.
--- Example: \set data_path '/Users/hekhatul/Desktop/EV/data'
+-- Load Olist CSV files into PostgreSQL.
+-- Uses client-side \copy, so it needs no superuser rights and no absolute paths.
+-- Run from the repo root (paths are relative to the current directory):
+--   psql -U postgres -d olist_ecommerce -f sql/02_load_data.sql
 
-\c olist_ecommerce;
+-- Dimensions first, then facts (FK order).
+TRUNCATE order_reviews, order_payments, order_items, orders,
+         products, sellers, customers, geolocation, category_translation;
 
--- Disable FK checks temporarily is not needed if we load in dependency order.
--- Load order: dimensions first, then facts.
+\copy customers            FROM 'data/olist_customers_dataset.csv'            WITH (FORMAT csv, HEADER true)
+\copy geolocation          FROM 'data/olist_geolocation_dataset.csv'          WITH (FORMAT csv, HEADER true)
+\copy sellers              FROM 'data/olist_sellers_dataset.csv'              WITH (FORMAT csv, HEADER true)
+\copy products             FROM 'data/olist_products_dataset.csv'             WITH (FORMAT csv, HEADER true)
+\copy category_translation FROM 'data/product_category_name_translation.csv' WITH (FORMAT csv, HEADER true)
+\copy orders               FROM 'data/olist_orders_dataset.csv'               WITH (FORMAT csv, HEADER true)
+\copy order_items          FROM 'data/olist_order_items_dataset.csv'          WITH (FORMAT csv, HEADER true)
+\copy order_payments       FROM 'data/olist_order_payments_dataset.csv'       WITH (FORMAT csv, HEADER true)
+\copy order_reviews        FROM 'data/olist_order_reviews_dataset.csv'        WITH (FORMAT csv, HEADER true)
 
-COPY customers
-FROM '/Users/hekhatul/Desktop/EV/data/olist_customers_dataset.csv'
-DELIMITER ',' CSV HEADER;
+ANALYZE;
 
-COPY geolocation
-FROM '/Users/hekhatul/Desktop/EV/data/olist_geolocation_dataset.csv'
-DELIMITER ',' CSV HEADER;
-
-COPY sellers
-FROM '/Users/hekhatul/Desktop/EV/data/olist_sellers_dataset.csv'
-DELIMITER ',' CSV HEADER;
-
-COPY products
-FROM '/Users/hekhatul/Desktop/EV/data/olist_products_dataset.csv'
-DELIMITER ',' CSV HEADER;
-
-COPY category_translation
-FROM '/Users/hekhatul/Desktop/EV/data/product_category_name_translation.csv'
-DELIMITER ',' CSV HEADER;
-
-COPY orders
-FROM '/Users/hekhatul/Desktop/EV/data/olist_orders_dataset.csv'
-DELIMITER ',' CSV HEADER;
-
-COPY order_items
-FROM '/Users/hekhatul/Desktop/EV/data/olist_order_items_dataset.csv'
-DELIMITER ',' CSV HEADER;
-
-COPY order_payments
-FROM '/Users/hekhatul/Desktop/EV/data/olist_order_payments_dataset.csv'
-DELIMITER ',' CSV HEADER;
-
-COPY order_reviews
-FROM '/Users/hekhatul/Desktop/EV/data/olist_order_reviews_dataset.csv'
-DELIMITER ',' CSV HEADER;
-
--- Quick sanity checks
+-- Sanity checks
 SELECT 'customers' AS table_name, COUNT(*) AS n FROM customers
 UNION ALL SELECT 'orders', COUNT(*) FROM orders
 UNION ALL SELECT 'order_items', COUNT(*) FROM order_items
