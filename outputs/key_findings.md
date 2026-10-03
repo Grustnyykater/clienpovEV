@@ -1,30 +1,35 @@
-# Key Findings (generated from analysis)
+# Key findings
 
-- Period: 2016-09-15 → 2018-08-29
-- GMV (delivered): R$ 13,221,498.11
-- Orders: 96,478 | Customers: 93,358 | AOV: R$ 137.04
-- Repeat purchase rate: 3.0%
-- Avg / median delivery: 12.56 / 10.22 days
-- Late delivery rate: 8.11%
+_Файл генерируется `scripts/run_analysis.py` — не редактировать вручную._
 
-## Categories
-- Top-5 categories generate 39.8% of revenue.
-- Leader: **health_beauty** — 9.3% of GMV, 8,647 orders, AOV R$ 142.61.
-- Among high-volume categories, **electronics** has high order volume (2,517) but lower AOV (R$ 61.60) vs **watches_gifts** (AOV R$ 212.23).
+## KPI (доставленные заказы)
+- Период: 2016-09-15 → 2018-08-29
+- GMV: R$ 13,221,498.11 (с доставкой R$ 15,419,773.75)
+- Заказы: 96,478 · клиенты: 93,358 · AOV: R$ 137.04
+- Repeat purchase rate: 3.0% · M1 retention (взвешенно по когортам 2017-01…2018-06): 0.48%
+- Доставка: в среднем 12.56 дн., медиана 10.22 дн.; с опозданием 6.77%
+- Средняя оценка отзыва: 4.16
 
-## Regions
-- São Paulo (SP) alone accounts for ~38.3% of revenue.
-- Highest late-delivery states (sample): AL (23.9%), MA (19.7%), PI (16.0%).
+## Продажи
+- Пик — 2017-11 (Black Friday): R$ 987,765.
+- Топ-5 категорий дают 39.8% выручки; лидер — **health_beauty** (9.3%).
+- Среди 15 самых массовых категорий минимальный AOV у **electronics** (R$ 61.60, 2,517 заказов), максимальный — у **watches_gifts** (R$ 212.23).
+- Штат SP даёт 38.3% выручки.
 
-## Retention & RFM
-- Average M1 retention across cohorts ≈ 0.47% (typical for marketplace one-off purchases).
-- Champions: 6491 customers, 13.5% of revenue.
-- At Risk: 22338 | Lost: 15005.
+## Доставка и отзывы
+- Штаты с наибольшей долей опозданий: AL (21.4%), MA (17.4%), SE (15.2%).
+- Оценка: в срок 4.29, опоздание 1–3 дня 3.29, 8+ дней 1.70; доля оценок 1–2: 9% → 79%.
+- IQR-выбросы по сроку доставки: 5.1% заказов.
 
-## Delivery quality
-- Late deliveries average review score 2.57 vs on-time 4.29.
-- Delivery-time IQR outliers: 5.1% of orders.
+## Клиенты
+- Повторных покупателей 2,801; медиана до 2-го заказа 29.0 дн., но 30.5% вторых заказов сделаны в течение суток (дозаказ, а не возврат клиента).
+- **Champions** — 1,809 клиентов (1.9%), 3.6% выручки, средний LTV R$ 266
+- **At Risk** — 992 клиентов (1.1%), 1.9% выручки, средний LTV R$ 249
+- **New High-Value** — 14,479 клиентов (15.5%), 29.3% выручки, средний LTV R$ 267
+- **New** — 21,662 клиентов (23.2%), 9.1% выручки, средний LTV R$ 56
+- **Lapsed High-Value** — 20,727 клиентов (22.2%), 42.0% выручки, средний LTV R$ 268
+- **Lapsed** — 33,689 клиентов (36.1%), 14.2% выручки, средний LTV R$ 56
 
-## Price outliers
-- Item price median R$ 74.9, P95 R$ 349.0.
-- IQR outliers: 7.41% of items but 35.31% of revenue.
+## Цены
+- Медиана цены товара R$ 74.9, P95 R$ 349.0, граница IQR R$ 275.57.
+- IQR-выбросы: 7.41% позиций, но 35.31% выручки.

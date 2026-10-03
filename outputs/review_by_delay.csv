@@ -1,0 +1,5 @@
+delay_bucket,orders,avg_review_score,negative_review_pct
+on_time,89443,4.29,9.23
+late_1_3d,1852,3.29,32.18
+late_4_7d,1748,2.11,67.56
+late_8d_plus,2781,1.7,79.18

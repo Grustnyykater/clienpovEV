@@ -1,571 +1,563 @@
 """
-Olist E-Commerce Analytics — end-to-end pipeline
-Loads CSVs → cleans → EDA → RFM → Cohort Retention → exports for Power BI
+Olist E-Commerce Analytics — end-to-end pipeline.
+
+raw CSVs → data quality → fact tables → KPIs → categories / regions → delivery & reviews
+→ RFM → cohort retention → CSV exports (+ Power BI tables) → figures & dashboard → key findings.
+
+Metric definitions are identical to sql/03_analytics_queries.sql:
+  * scope          — orders with status 'delivered';
+  * GMV / revenue  — sum of order_items.price (freight excluded);
+  * customer       — customer_unique_id (customer_id is issued per order);
+  * late delivery  — delivered date > estimated date (the estimate has no time part).
+
+Usage:  python scripts/run_analysis.py [--data-dir data] [--out-dir outputs]
 """
 
 from __future__ import annotations
 
+import argparse
+import sys
 from pathlib import Path
 
-import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
-import seaborn as sns
 
 ROOT = Path(__file__).resolve().parents[1]
-DATA = ROOT / "data"
-OUT = ROOT / "outputs"
-FIG = OUT / "figures"
-OUT.mkdir(parents=True, exist_ok=True)
-FIG.mkdir(parents=True, exist_ok=True)
 
-sns.set_theme(style="whitegrid", context="talk")
-plt.rcParams["figure.figsize"] = (12, 6)
-plt.rcParams["axes.titlesize"] = 14
+FILES = {
+    "customers": "olist_customers_dataset.csv",
+    "orders": "olist_orders_dataset.csv",
+    "items": "olist_order_items_dataset.csv",
+    "payments": "olist_order_payments_dataset.csv",
+    "reviews": "olist_order_reviews_dataset.csv",
+    "products": "olist_products_dataset.csv",
+    "sellers": "olist_sellers_dataset.csv",
+    "translation": "product_category_name_translation.csv",
+}
 
+ORDER_DATE_COLS = [
+    "order_purchase_timestamp",
+    "order_approved_at",
+    "order_delivered_customer_date",
+    "order_estimated_delivery_date",
+    "order_delivered_carrier_date",
+]
 
-def load_raw() -> dict[str, pd.DataFrame]:
-    return {
-        "customers": pd.read_csv(DATA / "olist_customers_dataset.csv"),
-        "orders": pd.read_csv(DATA / "olist_orders_dataset.csv"),
-        "items": pd.read_csv(DATA / "olist_order_items_dataset.csv"),
-        "payments": pd.read_csv(DATA / "olist_order_payments_dataset.csv"),
-        "reviews": pd.read_csv(DATA / "olist_order_reviews_dataset.csv"),
-        "products": pd.read_csv(DATA / "olist_products_dataset.csv"),
-        "sellers": pd.read_csv(DATA / "olist_sellers_dataset.csv"),
-        "translation": pd.read_csv(DATA / "product_category_name_translation.csv"),
-    }
+# Fixed display order of RFM segments (most to least valuable).
+SEGMENTS = ["Champions", "At Risk", "New High-Value", "New", "Lapsed High-Value", "Lapsed"]
 
+DELAY_BUCKETS = ["on_time", "late_1_3d", "late_4_7d", "late_8d_plus"]
 
-def parse_dates(orders: pd.DataFrame) -> pd.DataFrame:
-    date_cols = [
-        "order_purchase_timestamp",
-        "order_approved_at",
-        "order_delivered_carrier_date",
-        "order_delivered_customer_date",
-        "order_estimated_delivery_date",
-    ]
-    for col in date_cols:
-        orders[col] = pd.to_datetime(orders[col], errors="coerce")
-    return orders
+COHORT_WINDOW = ("2017-01", "2018-06")  # cohorts with enough history; 2016 is a test launch
+MAX_PERIOD = 6
 
 
-def build_fact(tables: dict[str, pd.DataFrame]) -> pd.DataFrame:
-    """One row per order-item for delivered orders with category & customer."""
-    orders = parse_dates(tables["orders"].copy())
-    items = tables["items"].copy()
-    customers = tables["customers"].copy()
-    products = tables["products"].merge(
-        tables["translation"], on="product_category_name", how="left"
-    )
+# =============================================================================
+# Load & prepare
+# =============================================================================
 
-    fact = (
-        items.merge(orders, on="order_id", how="inner")
-        .merge(customers, on="customer_id", how="left")
-        .merge(
-            products[
-                [
-                    "product_id",
-                    "product_category_name",
-                    "product_category_name_english",
-                ]
-            ],
-            on="product_id",
-            how="left",
+
+def load_raw(data_dir: Path) -> dict[str, pd.DataFrame]:
+    missing = [f for f in FILES.values() if not (data_dir / f).exists()]
+    if missing:
+        sys.exit(
+            f"Missing files in {data_dir}: {', '.join(missing)}\n"
+            "Download the dataset from Kaggle — see data/README.md."
         )
-    )
-    fact["category"] = fact["product_category_name_english"].fillna(
-        fact["product_category_name"]
-    ).fillna("unknown")
-    fact["year_month"] = fact["order_purchase_timestamp"].dt.to_period("M").astype(str)
-    return fact
+    tables = {name: pd.read_csv(data_dir / f) for name, f in FILES.items()}
+    for col in ORDER_DATE_COLS:
+        tables["orders"][col] = pd.to_datetime(tables["orders"][col], errors="coerce")
+    return tables
 
 
-def data_quality_report(tables: dict[str, pd.DataFrame], fact: pd.DataFrame) -> pd.DataFrame:
+def data_quality_report(tables: dict[str, pd.DataFrame]) -> pd.DataFrame:
     rows = []
     for name, df in tables.items():
+        nulls = int(df.isna().sum().sum())
         rows.append(
             {
                 "table": name,
                 "rows": len(df),
                 "cols": df.shape[1],
                 "duplicate_rows": int(df.duplicated().sum()),
-                "null_cells": int(df.isna().sum().sum()),
-                "null_pct": round(100 * df.isna().sum().sum() / df.size, 2),
+                "null_cells": nulls,
+                "null_pct": round(100 * nulls / df.size, 2),
             }
         )
-    report = pd.DataFrame(rows)
-    report.to_csv(OUT / "data_quality_report.csv", index=False)
-
-    status = tables["orders"]["order_status"].value_counts(normalize=True).mul(100).round(2)
-    status.to_csv(OUT / "order_status_share.csv", header=["pct"])
-    return report
+    return pd.DataFrame(rows)
 
 
-def compute_kpis(fact: pd.DataFrame) -> dict:
-    delivered = fact[fact["order_status"] == "delivered"].copy()
-    gmv = delivered["price"].sum()
-    orders = delivered["order_id"].nunique()
-    customers = delivered["customer_unique_id"].nunique()
-    aov = gmv / orders if orders else np.nan
+def delivery_delay(delivered_at: pd.Series, estimated_at: pd.Series) -> pd.Series:
+    """Days delivered after the promised date (<= 0 means on time). NaN if not delivered.
 
-    cust_orders = (
-        delivered.groupby("customer_unique_id")["order_id"].nunique().reset_index(name="n_orders")
+    The estimated date carries no time of day, so both sides are compared as dates:
+    a parcel delivered at 18:00 on the promised day is on time.
+    """
+    return (delivered_at.dt.normalize() - estimated_at.dt.normalize()).dt.days
+
+
+def delay_bucket(delay_days: pd.Series) -> pd.Series:
+    bucket = pd.cut(
+        delay_days,
+        bins=[-np.inf, 0, 3, 7, np.inf],
+        labels=DELAY_BUCKETS,
     )
-    repeat_rate = (cust_orders["n_orders"] >= 2).mean() * 100
-
-    orders_df = delivered.drop_duplicates("order_id")[
-        [
-            "order_id",
-            "order_purchase_timestamp",
-            "order_delivered_customer_date",
-            "order_estimated_delivery_date",
-        ]
-    ].copy()
-    orders_df["delivery_days"] = (
-        orders_df["order_delivered_customer_date"] - orders_df["order_purchase_timestamp"]
-    ).dt.total_seconds() / 86400
-    orders_df["is_late"] = (
-        orders_df["order_delivered_customer_date"] > orders_df["order_estimated_delivery_date"]
-    )
-
-    kpis = {
-        "gmv": round(float(gmv), 2),
-        "orders": int(orders),
-        "customers": int(customers),
-        "aov": round(float(aov), 2),
-        "repeat_purchase_rate_pct": round(float(repeat_rate), 2),
-        "avg_delivery_days": round(float(orders_df["delivery_days"].mean()), 2),
-        "median_delivery_days": round(float(orders_df["delivery_days"].median()), 2),
-        "late_delivery_rate_pct": round(float(orders_df["is_late"].mean() * 100), 2),
-        "items": int(len(delivered)),
-        "date_min": str(delivered["order_purchase_timestamp"].min().date()),
-        "date_max": str(delivered["order_purchase_timestamp"].max().date()),
-    }
-    pd.Series(kpis).to_csv(OUT / "kpi_summary.csv", header=["value"])
-    return kpis, delivered, orders_df
+    return bucket.astype("object")
 
 
-def monthly_dynamics(delivered: pd.DataFrame) -> pd.DataFrame:
-    monthly = (
-        delivered.groupby("year_month")
-        .agg(
-            revenue=("price", "sum"),
-            orders=("order_id", "nunique"),
-            customers=("customer_unique_id", "nunique"),
+def build_fact(tables: dict[str, pd.DataFrame]) -> pd.DataFrame:
+    """Order-item level fact for delivered orders, with customer and category."""
+    products = tables["products"].merge(tables["translation"], on="product_category_name", how="left")
+    fact = (
+        tables["items"]
+        .merge(tables["orders"], on="order_id", how="inner")
+        .merge(tables["customers"], on="customer_id", how="left")
+        .merge(
+            products[["product_id", "product_category_name", "product_category_name_english"]],
+            on="product_id",
+            how="left",
         )
-        .reset_index()
     )
-    monthly["aov"] = monthly["revenue"] / monthly["orders"]
-    monthly.to_csv(OUT / "monthly_sales.csv", index=False)
+    fact = fact[fact["order_status"] == "delivered"].copy()
+    fact["category"] = (
+        fact["product_category_name_english"].fillna(fact["product_category_name"]).fillna("unknown")
+    )
+    fact["year_month"] = fact["order_purchase_timestamp"].dt.to_period("M").astype(str)
+    return fact
 
-    fig, ax = plt.subplots()
-    ax.plot(monthly["year_month"], monthly["revenue"], marker="o", linewidth=2)
-    ax.set_title("Monthly GMV (delivered orders)")
-    ax.set_xlabel("Month")
-    ax.set_ylabel("Revenue (BRL)")
-    ax.tick_params(axis="x", rotation=45)
-    fig.tight_layout()
-    fig.savefig(FIG / "monthly_gmv.png", dpi=150)
-    plt.close(fig)
+
+def build_orders(delivered: pd.DataFrame, reviews: pd.DataFrame) -> pd.DataFrame:
+    """One row per delivered order: revenue, delivery metrics, review score."""
+    orders = delivered.groupby("order_id", as_index=False).agg(
+        customer_unique_id=("customer_unique_id", "first"),
+        customer_state=("customer_state", "first"),
+        order_purchase_timestamp=("order_purchase_timestamp", "first"),
+        order_delivered_customer_date=("order_delivered_customer_date", "first"),
+        order_estimated_delivery_date=("order_estimated_delivery_date", "first"),
+        year_month=("year_month", "first"),
+        revenue=("price", "sum"),
+        freight=("freight_value", "sum"),
+        items=("order_item_id", "count"),
+    )
+    orders["delivery_days"] = (
+        orders["order_delivered_customer_date"] - orders["order_purchase_timestamp"]
+    ).dt.total_seconds() / 86400
+    orders["delay_days"] = delivery_delay(
+        orders["order_delivered_customer_date"], orders["order_estimated_delivery_date"]
+    )
+    orders["is_late"] = (orders["delay_days"] > 0).astype(float).where(orders["delay_days"].notna())
+    orders["delay_bucket"] = delay_bucket(orders["delay_days"])
+
+    # A few orders have several reviews — average them so every order counts once.
+    order_review = reviews.groupby("order_id", as_index=False)["review_score"].mean()
+    return orders.merge(order_review, on="order_id", how="left")
+
+
+# =============================================================================
+# Metrics
+# =============================================================================
+
+
+def second_order_timing(orders: pd.DataFrame) -> dict:
+    """How soon repeat customers place their 2nd order."""
+    o = orders.sort_values(["customer_unique_id", "order_purchase_timestamp"])
+    o["order_no"] = o.groupby("customer_unique_id").cumcount() + 1
+    o["gap_days"] = (
+        o.groupby("customer_unique_id")["order_purchase_timestamp"].diff().dt.total_seconds() / 86400
+    )
+    gaps = o.loc[o["order_no"] == 2, "gap_days"]
+    return {
+        "second_orders": int(len(gaps)),
+        "median_days_to_2nd_order": round(float(gaps.median()), 1),
+        "second_order_within_1d_pct": round(float((gaps <= 1).mean() * 100), 1),
+        "second_order_within_90d_pct": round(float((gaps <= 90).mean() * 100), 1),
+    }
+
+
+def compute_kpis(delivered: pd.DataFrame, orders: pd.DataFrame) -> dict:
+    n_orders = orders["order_id"].nunique()
+    per_customer = orders.groupby("customer_unique_id")["order_id"].nunique()
+    late = orders["is_late"]
+    return {
+        "gmv": round(float(delivered["price"].sum()), 2),
+        "gmv_incl_freight": round(float((delivered["price"] + delivered["freight_value"]).sum()), 2),
+        "orders": int(n_orders),
+        "customers": int(per_customer.size),
+        "items": int(len(delivered)),
+        "aov": round(float(delivered["price"].sum() / n_orders), 2),
+        "repeat_purchase_rate_pct": round(float((per_customer >= 2).mean() * 100), 2),
+        "avg_delivery_days": round(float(orders["delivery_days"].mean()), 2),
+        "median_delivery_days": round(float(orders["delivery_days"].median()), 2),
+        "late_delivery_rate_pct": round(float(late.mean() * 100), 2),
+        "avg_review_score": round(float(orders["review_score"].mean()), 2),
+        "review_on_time": round(float(orders.loc[late == 0, "review_score"].mean()), 2),
+        "review_late": round(float(orders.loc[late == 1, "review_score"].mean()), 2),
+        "date_min": str(orders["order_purchase_timestamp"].min().date()),
+        "date_max": str(orders["order_purchase_timestamp"].max().date()),
+        **second_order_timing(orders),
+    }
+
+
+def monthly_dynamics(orders: pd.DataFrame) -> pd.DataFrame:
+    monthly = orders.groupby("year_month").agg(
+        revenue=("revenue", "sum"),
+        orders=("order_id", "nunique"),
+        customers=("customer_unique_id", "nunique"),
+    )
+    # Months without delivered orders (e.g. 2016-11) must appear as zeros, not vanish.
+    full = pd.period_range(monthly.index.min(), monthly.index.max(), freq="M").astype(str)
+    monthly = monthly.reindex(full, fill_value=0).rename_axis("month").reset_index()
+    monthly["aov"] = (monthly["revenue"] / monthly["orders"].replace(0, np.nan)).round(2)
+    monthly["revenue_mom_pct"] = (monthly["revenue"].pct_change(fill_method=None) * 100).round(1)
+    monthly.loc[monthly["month"] < COHORT_WINDOW[0], "revenue_mom_pct"] = np.nan
     return monthly
 
 
 def category_analysis(delivered: pd.DataFrame) -> pd.DataFrame:
-    cat = (
-        delivered.groupby("category")
-        .agg(revenue=("price", "sum"), orders=("order_id", "nunique"), items=("order_id", "count"))
-        .reset_index()
+    cat = delivered.groupby("category").agg(
+        revenue=("price", "sum"), orders=("order_id", "nunique"), items=("order_id", "count")
     )
+    cat = cat.sort_values("revenue", ascending=False).reset_index()
     cat["aov"] = cat["revenue"] / cat["orders"]
     cat["revenue_share_pct"] = 100 * cat["revenue"] / cat["revenue"].sum()
-    cat = cat.sort_values("revenue", ascending=False)
-    cat["revenue_rank"] = range(1, len(cat) + 1)
-    cat.to_csv(OUT / "category_sales.csv", index=False)
-
-    top = cat.head(10)
-    fig, ax = plt.subplots()
-    sns.barplot(data=top, y="category", x="revenue", ax=ax, color="#1f77b4")
-    ax.set_title("Top-10 categories by revenue")
-    ax.set_xlabel("Revenue (BRL)")
-    ax.set_ylabel("")
-    fig.tight_layout()
-    fig.savefig(FIG / "top_categories.png", dpi=150)
-    plt.close(fig)
+    cat["cumulative_share_pct"] = cat["revenue_share_pct"].cumsum()
+    cat["revenue_rank"] = np.arange(1, len(cat) + 1)
     return cat
 
 
-def region_analysis(delivered: pd.DataFrame) -> pd.DataFrame:
-    region = (
-        delivered.groupby("customer_state")
-        .agg(
-            revenue=("price", "sum"),
-            orders=("order_id", "nunique"),
-            customers=("customer_unique_id", "nunique"),
-        )
-        .reset_index()
+def region_analysis(orders: pd.DataFrame) -> pd.DataFrame:
+    region = orders.groupby("customer_state").agg(
+        revenue=("revenue", "sum"),
+        orders=("order_id", "nunique"),
+        customers=("customer_unique_id", "nunique"),
     )
+    region = region.sort_values("revenue", ascending=False).reset_index()
     region["aov"] = region["revenue"] / region["orders"]
     region["revenue_share_pct"] = 100 * region["revenue"] / region["revenue"].sum()
-    region = region.sort_values("revenue", ascending=False)
-    region.to_csv(OUT / "region_sales.csv", index=False)
-
-    top = region.head(10)
-    fig, ax = plt.subplots()
-    sns.barplot(data=top, x="customer_state", y="revenue", ax=ax, color="#2ca02c")
-    ax.set_title("Top-10 states by revenue")
-    ax.set_xlabel("State")
-    ax.set_ylabel("Revenue (BRL)")
-    fig.tight_layout()
-    fig.savefig(FIG / "top_states.png", dpi=150)
-    plt.close(fig)
     return region
 
 
-def delivery_analysis(orders_df: pd.DataFrame, delivered: pd.DataFrame, reviews: pd.DataFrame) -> pd.DataFrame:
-    clean = orders_df.dropna(subset=["delivery_days"]).copy()
-    # Outliers: IQR
-    q1, q3 = clean["delivery_days"].quantile([0.25, 0.75])
-    iqr = q3 - q1
-    clean["is_outlier"] = (clean["delivery_days"] < q1 - 1.5 * iqr) | (
-        clean["delivery_days"] > q3 + 1.5 * iqr
+def delivery_by_state(orders: pd.DataFrame, min_orders: int = 100) -> pd.DataFrame:
+    d = orders.dropna(subset=["delay_days"])
+    by_state = d.groupby("customer_state").agg(
+        orders=("order_id", "nunique"),
+        avg_delivery_days=("delivery_days", "mean"),
+        late_rate_pct=("is_late", "mean"),
     )
-
-    state_del = delivered.drop_duplicates("order_id").merge(
-        clean[["order_id", "delivery_days", "is_late"]], on="order_id", how="left"
-    )
-    by_state = (
-        state_del.groupby("customer_state")
-        .agg(
-            orders=("order_id", "nunique"),
-            avg_delivery_days=("delivery_days", "mean"),
-            late_rate_pct=("is_late", lambda s: 100 * s.mean()),
-        )
-        .reset_index()
-        .query("orders >= 100")
+    by_state["late_rate_pct"] *= 100
+    return (
+        by_state[by_state["orders"] >= min_orders]
         .sort_values("late_rate_pct", ascending=False)
-    )
-    by_state.to_csv(OUT / "delivery_by_state.csv", index=False)
-
-    rev = reviews.merge(clean[["order_id", "is_late"]], on="order_id", how="inner")
-    rev_cmp = rev.groupby("is_late")["review_score"].agg(["mean", "count"]).reset_index()
-    rev_cmp["is_late"] = rev_cmp["is_late"].map({True: "late", False: "on_time"})
-    rev_cmp.to_csv(OUT / "review_vs_late.csv", index=False)
-
-    fig, axes = plt.subplots(1, 2, figsize=(14, 5))
-    sns.histplot(clean["delivery_days"].clip(0, 60), bins=40, ax=axes[0], color="#ff7f0e")
-    axes[0].set_title("Delivery time distribution (clipped 0–60 days)")
-    axes[0].set_xlabel("Days")
-    top_late = by_state.head(10)
-    sns.barplot(data=top_late, y="customer_state", x="late_rate_pct", ax=axes[1], color="#d62728")
-    axes[1].set_title("Highest late delivery rate by state (≥100 orders)")
-    axes[1].set_xlabel("Late rate, %")
-    axes[1].set_ylabel("")
-    fig.tight_layout()
-    fig.savefig(FIG / "delivery_analysis.png", dpi=150)
-    plt.close(fig)
-
-    outlier_pct = 100 * clean["is_outlier"].mean()
-    return by_state, float(outlier_pct), rev_cmp
-
-
-def rfm_analysis(delivered: pd.DataFrame) -> pd.DataFrame:
-    snapshot = pd.Timestamp("2018-09-01")
-    rfm = (
-        delivered.groupby("customer_unique_id")
-        .agg(
-            last_order=("order_purchase_timestamp", "max"),
-            frequency=("order_id", "nunique"),
-            monetary=("price", "sum"),
-        )
         .reset_index()
     )
-    rfm["recency_days"] = (snapshot - rfm["last_order"]).dt.days
 
-    # Quintile scores: R — lower days better; F/M — higher better
-    rfm["R"] = pd.qcut(rfm["recency_days"].rank(method="first"), 5, labels=[5, 4, 3, 2, 1]).astype(int)
-    rfm["F"] = pd.qcut(rfm["frequency"].rank(method="first"), 5, labels=[1, 2, 3, 4, 5]).astype(int)
-    rfm["M"] = pd.qcut(rfm["monetary"].rank(method="first"), 5, labels=[1, 2, 3, 4, 5]).astype(int)
-    rfm["RFM_score"] = rfm["R"] + rfm["F"] + rfm["M"]
 
-    def segment(row: pd.Series) -> str:
-        r, f, m = row["R"], row["F"], row["M"]
-        if r >= 4 and f >= 4 and m >= 4:
-            return "Champions"
-        if r >= 3 and f >= 3 and m >= 3:
-            return "Loyal Customers"
-        if r >= 4 and f <= 2:
-            return "Potential Loyalists"
-        if r <= 2 and f >= 3:
-            return "At Risk"
-        if r <= 2 and f <= 2:
-            return "Lost Customers"
-        return "Others"
-
-    rfm["segment"] = rfm.apply(segment, axis=1)
-    rfm.to_csv(OUT / "rfm_customers.csv", index=False)
-
-    seg = (
-        rfm.groupby("segment")
-        .agg(
-            customers=("customer_unique_id", "count"),
-            revenue=("monetary", "sum"),
-            avg_monetary=("monetary", "mean"),
-            avg_frequency=("frequency", "mean"),
-            avg_recency=("recency_days", "mean"),
-        )
-        .reset_index()
+def review_by_delay(orders: pd.DataFrame) -> pd.DataFrame:
+    r = orders.dropna(subset=["delay_bucket", "review_score"])
+    out = r.groupby("delay_bucket").agg(
+        orders=("order_id", "count"),
+        avg_review_score=("review_score", "mean"),
+        negative_review_pct=("review_score", lambda s: (s <= 2).mean() * 100),
     )
-    seg["customer_share_pct"] = 100 * seg["customers"] / seg["customers"].sum()
-    seg["revenue_share_pct"] = 100 * seg["revenue"] / seg["revenue"].sum()
-    seg = seg.sort_values("revenue", ascending=False)
-    seg.to_csv(OUT / "rfm_segments.csv", index=False)
-
-    fig, axes = plt.subplots(1, 2, figsize=(14, 5))
-    order = seg.sort_values("customers", ascending=False)["segment"]
-    sns.barplot(data=seg, y="segment", x="customers", order=order, ax=axes[0], color="#9467bd")
-    axes[0].set_title("Customers by RFM segment")
-    sns.barplot(data=seg, y="segment", x="revenue", order=order, ax=axes[1], color="#8c564b")
-    axes[1].set_title("Revenue by RFM segment")
-    fig.tight_layout()
-    fig.savefig(FIG / "rfm_segments.png", dpi=150)
-    plt.close(fig)
-    return rfm, seg
+    return out.reindex(DELAY_BUCKETS).dropna(how="all").reset_index()
 
 
-def cohort_retention(delivered: pd.DataFrame) -> pd.DataFrame:
-    cust = (
-        delivered.groupby(["customer_unique_id", "order_id"], as_index=False)["order_purchase_timestamp"]
-        .min()
-    )
-    cust["order_month"] = cust["order_purchase_timestamp"].dt.to_period("M")
-    first = cust.groupby("customer_unique_id")["order_month"].min().rename("cohort")
-    cust = cust.join(first, on="customer_unique_id")
-    cust["period"] = (cust["order_month"] - cust["cohort"]).apply(lambda x: x.n)
-
-    cohort = (
-        cust.groupby(["cohort", "period"])["customer_unique_id"]
-        .nunique()
-        .reset_index(name="customers")
-    )
-    sizes = cohort[cohort["period"] == 0][["cohort", "customers"]].rename(
-        columns={"customers": "cohort_size"}
-    )
-    cohort = cohort.merge(sizes, on="cohort")
-    cohort["retention_pct"] = 100 * cohort["customers"] / cohort["cohort_size"]
-
-    # Focus on stable window
-    pivot = (
-        cohort[
-            (cohort["cohort"] >= "2017-01")
-            & (cohort["cohort"] <= "2018-06")
-            & (cohort["period"] <= 6)
-        ]
-        .pivot(index="cohort", columns="period", values="retention_pct")
-        .round(2)
-    )
-    pivot.to_csv(OUT / "retention_heatmap.csv")
-    cohort.to_csv(OUT / "cohort_retention_long.csv", index=False)
-
-    fig, ax = plt.subplots(figsize=(12, 8))
-    sns.heatmap(pivot, annot=True, fmt=".1f", cmap="YlGnBu", ax=ax, cbar_kws={"label": "Retention %"})
-    ax.set_title("Cohort Retention Heatmap (% of customers returning)")
-    ax.set_xlabel("Months since first purchase")
-    ax.set_ylabel("Cohort (first purchase month)")
-    fig.tight_layout()
-    fig.savefig(FIG / "retention_heatmap.png", dpi=150)
-    plt.close(fig)
-    return pivot, cohort
+def delivery_outlier_pct(orders: pd.DataFrame) -> float:
+    days = orders["delivery_days"].dropna()
+    q1, q3 = days.quantile([0.25, 0.75])
+    iqr = q3 - q1
+    return float(((days < q1 - 1.5 * iqr) | (days > q3 + 1.5 * iqr)).mean() * 100)
 
 
-def outlier_price_analysis(delivered: pd.DataFrame) -> dict:
+def price_outliers(delivered: pd.DataFrame) -> dict:
     prices = delivered["price"]
     q1, q3 = prices.quantile([0.25, 0.75])
-    iqr = q3 - q1
-    upper = q3 + 1.5 * iqr
-    outliers = delivered[delivered["price"] > upper]
-    stats = {
+    upper = q3 + 1.5 * (q3 - q1)
+    out = prices[prices > upper]
+    return {
         "price_median": round(float(prices.median()), 2),
         "price_mean": round(float(prices.mean()), 2),
         "price_p95": round(float(prices.quantile(0.95)), 2),
         "price_p99": round(float(prices.quantile(0.99)), 2),
         "iqr_upper": round(float(upper), 2),
-        "outlier_items": int(len(outliers)),
-        "outlier_pct": round(100 * len(outliers) / len(delivered), 2),
-        "outlier_revenue_share_pct": round(100 * outliers["price"].sum() / prices.sum(), 2),
+        "outlier_items": int(len(out)),
+        "outlier_pct": round(100 * len(out) / len(prices), 2),
+        "outlier_revenue_share_pct": round(100 * out.sum() / prices.sum(), 2),
     }
-    pd.Series(stats).to_csv(OUT / "price_outliers.csv", header=["value"])
-
-    fig, ax = plt.subplots()
-    sns.boxplot(x=prices.clip(upper=prices.quantile(0.99)), ax=ax, color="#17becf")
-    ax.set_title("Item price distribution (clipped at P99 for display)")
-    ax.set_xlabel("Price (BRL)")
-    fig.tight_layout()
-    fig.savefig(FIG / "price_outliers.png", dpi=150)
-    plt.close(fig)
-    return stats
 
 
-def write_business_insights(
-    kpis: dict,
-    cat: pd.DataFrame,
-    region: pd.DataFrame,
-    seg: pd.DataFrame,
-    pivot: pd.DataFrame,
-    late_by_state: pd.DataFrame,
-    rev_cmp: pd.DataFrame,
-    price_stats: dict,
-    delivery_outlier_pct: float,
-) -> str:
-    top5 = cat.head(5)
-    top5_share = top5["revenue_share_pct"].sum()
-    top_cat = cat.iloc[0]
-    # High volume low AOV example: among top 15 by orders, pick lowest AOV
-    top_orders = cat.sort_values("orders", ascending=False).head(15)
-    low_aov_cat = top_orders.sort_values("aov").iloc[0]
-    high_aov_cat = top_orders.sort_values("aov", ascending=False).iloc[0]
+# =============================================================================
+# RFM
+# =============================================================================
 
-    sp_share = float(region.loc[region["customer_state"] == "SP", "revenue_share_pct"].sum())
-    m1 = float(pivot[1].mean()) if 1 in pivot.columns else float("nan")
 
-    late_row = rev_cmp.set_index("is_late")
-    late_score = float(late_row.loc["late", "mean"]) if "late" in late_row.index else float("nan")
-    ontime_score = (
-        float(late_row.loc["on_time", "mean"]) if "on_time" in late_row.index else float("nan")
+def ntile(n_rows: int, n: int = 5) -> np.ndarray:
+    """Bucket labels 1..n for rows already sorted ascending — same as SQL NTILE(n)."""
+    q, r = divmod(n_rows, n)
+    sizes = [q + 1] * r + [q] * (n - r)
+    return np.repeat(np.arange(1, n + 1), sizes)
+
+
+def assign_segment(frequency: pd.Series, r: pd.Series, m: pd.Series) -> pd.Series:
+    """
+    ~97% of Olist customers buy once, so frequency quintiles would just be random
+    tie-breaking among one-time buyers. Instead:
+      * repeat buyers (2+ orders) split by recency: Champions / At Risk;
+      * one-time buyers split by recency (R 4-5 = recent) and value (M 4-5 = top 40%).
+    """
+    repeat = frequency >= 2
+    recent = r >= 4
+    high_value = m >= 4
+    conditions = [
+        repeat & (r >= 3),
+        repeat,
+        recent & high_value,
+        recent,
+        high_value,
+    ]
+    return pd.Series(
+        np.select(conditions, SEGMENTS[:5], default=SEGMENTS[5]), index=frequency.index
     )
 
-    champions = seg[seg["segment"] == "Champions"]
-    at_risk = seg[seg["segment"] == "At Risk"]
-    lost = seg[seg["segment"] == "Lost Customers"]
+
+def rfm_analysis(orders: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
+    rfm = orders.groupby("customer_unique_id", as_index=False).agg(
+        last_order=("order_purchase_timestamp", "max"),
+        frequency=("order_id", "nunique"),
+        monetary=("revenue", "sum"),
+    )
+    rfm["monetary"] = rfm["monetary"].round(2)
+    snapshot = rfm["last_order"].max().normalize() + pd.Timedelta(days=1)
+    rfm["recency_days"] = (snapshot - rfm["last_order"].dt.normalize()).dt.days
+
+    # Deterministic tie-breaking by customer id, exactly like the SQL version.
+    rfm = rfm.sort_values(["recency_days", "customer_unique_id"], ascending=[False, True])
+    rfm["R"] = ntile(len(rfm))  # most recent → 5
+    rfm = rfm.sort_values(["monetary", "customer_unique_id"])
+    rfm["M"] = ntile(len(rfm))  # highest spend → 5
+    rfm["F"] = rfm["frequency"].clip(upper=5)
+    rfm["segment"] = assign_segment(rfm["frequency"], rfm["R"], rfm["M"])
+    rfm = rfm.sort_values("customer_unique_id").reset_index(drop=True)
+
+    seg = rfm.groupby("segment").agg(
+        customers=("customer_unique_id", "count"),
+        revenue=("monetary", "sum"),
+        avg_monetary=("monetary", "mean"),
+        avg_frequency=("frequency", "mean"),
+        avg_recency_days=("recency_days", "mean"),
+    )
+    seg = seg.reindex([s for s in SEGMENTS if s in seg.index]).reset_index()
+    seg["customer_share_pct"] = 100 * seg["customers"] / seg["customers"].sum()
+    seg["revenue_share_pct"] = 100 * seg["revenue"] / seg["revenue"].sum()
+    return rfm, seg
+
+
+# =============================================================================
+# Cohorts
+# =============================================================================
+
+
+def cohort_retention(orders: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame, pd.Series]:
+    act = orders[["customer_unique_id", "order_purchase_timestamp"]].copy()
+    act["month"] = act["order_purchase_timestamp"].dt.to_period("M")
+    act = act.drop_duplicates(["customer_unique_id", "month"])
+    act["cohort"] = act.groupby("customer_unique_id")["month"].transform("min")
+    act["period"] = (act["month"] - act["cohort"]).apply(lambda p: p.n)
+
+    long = act.groupby(["cohort", "period"]).size().rename("customers").reset_index()
+    sizes = long[long["period"] == 0].set_index("cohort")["customers"]
+    long["cohort_size"] = long["cohort"].map(sizes)
+    long["retention_pct"] = 100 * long["customers"] / long["cohort_size"]
+    long["cohort"] = long["cohort"].astype(str)
+
+    cohorts = pd.period_range(*COHORT_WINDOW, freq="M")
+    last_month = act["month"].max()
+    pivot = (
+        long[long["period"].between(1, MAX_PERIOD)]
+        .pivot(index="cohort", columns="period", values="retention_pct")
+        .reindex(index=cohorts.astype(str), columns=range(1, MAX_PERIOD + 1))
+    )
+    # A cohort with nobody returning in an observed month is 0%, not missing;
+    # months after the end of the data stay NaN.
+    for c in cohorts:
+        for p in pivot.columns:
+            observed = c + p <= last_month
+            if observed and pd.isna(pivot.loc[str(c), p]):
+                pivot.loc[str(c), p] = 0.0
+            elif not observed:
+                pivot.loc[str(c), p] = np.nan
+    pivot = pivot.round(2)
+    pivot.index.name = "cohort"
+    pivot.columns.name = "months_since_first_order"
+    cohort_sizes = sizes.rename(index=str).reindex(pivot.index)
+    return pivot, long, cohort_sizes
+
+
+def weighted_m1(long: pd.DataFrame) -> float:
+    """Share of customers (all cohorts in the window pooled) who bought again the next month."""
+    w = long[long["cohort"].between(*COHORT_WINDOW)]
+    base = w.loc[w["period"] == 0, "customers"].sum()
+    return float(100 * w.loc[w["period"] == 1, "customers"].sum() / base)
+
+
+# =============================================================================
+# Outputs
+# =============================================================================
+
+
+def export_powerbi_tables(delivered: pd.DataFrame, orders: pd.DataFrame, rfm: pd.DataFrame, out: Path) -> None:
+    order_level = orders.merge(
+        rfm[["customer_unique_id", "segment", "R", "F", "M"]], on="customer_unique_id", how="left"
+    )
+    order_level["is_late"] = order_level["is_late"].astype("Int64")
+    order_level.drop(columns=["order_delivered_customer_date", "order_estimated_delivery_date"]).to_csv(
+        out / "powerbi_orders.csv", index=False
+    )
+    delivered[
+        ["order_id", "order_item_id", "product_id", "seller_id", "category", "customer_unique_id",
+         "customer_state", "price", "freight_value", "order_purchase_timestamp", "year_month"]
+    ].to_csv(out / "powerbi_order_items.csv", index=False)
+    rfm.to_csv(out / "rfm_customers.csv", index=False)
+
+
+def write_findings(r: dict) -> str:
+    k, cat, seg = r["kpis"], r["cat"], r["seg"]
+    top_orders = cat.nlargest(15, "orders")
+    low_aov, high_aov = top_orders.nsmallest(1, "aov").iloc[0], top_orders.nlargest(1, "aov").iloc[0]
+    sp_share = float(r["region"].set_index("customer_state").loc["SP", "revenue_share_pct"])
+    rbd = r["review_by_delay"].set_index("delay_bucket")
+    s = seg.set_index("segment")
+    ps = r["price_stats"]
+    peak = r["monthly"].loc[r["monthly"]["revenue"].idxmax()]
+
+    def seg_line(name: str) -> str:
+        if name not in s.index:
+            return f"- {name}: —"
+        row = s.loc[name]
+        return (f"- **{name}** — {int(row.customers):,} клиентов ({row.customer_share_pct:.1f}%), "
+                f"{row.revenue_share_pct:.1f}% выручки, средний LTV R$ {row.avg_monetary:.0f}")
 
     lines = [
-        "# Key Findings (generated from analysis)",
+        "# Key findings",
         "",
-        f"- Period: {kpis['date_min']} → {kpis['date_max']}",
-        f"- GMV (delivered): R$ {kpis['gmv']:,.2f}",
-        f"- Orders: {kpis['orders']:,} | Customers: {kpis['customers']:,} | AOV: R$ {kpis['aov']:,.2f}",
-        f"- Repeat purchase rate: {kpis['repeat_purchase_rate_pct']}%",
-        f"- Avg / median delivery: {kpis['avg_delivery_days']} / {kpis['median_delivery_days']} days",
-        f"- Late delivery rate: {kpis['late_delivery_rate_pct']}%",
+        "_Файл генерируется `scripts/run_analysis.py` — не редактировать вручную._",
         "",
-        "## Categories",
-        f"- Top-5 categories generate {top5_share:.1f}% of revenue.",
-        f"- Leader: **{top_cat['category']}** — {top_cat['revenue_share_pct']:.1f}% of GMV, "
-        f"{int(top_cat['orders']):,} orders, AOV R$ {top_cat['aov']:.2f}.",
-        f"- Among high-volume categories, **{low_aov_cat['category']}** has high order volume "
-        f"({int(low_aov_cat['orders']):,}) but lower AOV (R$ {low_aov_cat['aov']:.2f}) vs "
-        f"**{high_aov_cat['category']}** (AOV R$ {high_aov_cat['aov']:.2f}).",
+        "## KPI (доставленные заказы)",
+        f"- Период: {k['date_min']} → {k['date_max']}",
+        f"- GMV: R$ {k['gmv']:,.2f} (с доставкой R$ {k['gmv_incl_freight']:,.2f})",
+        f"- Заказы: {k['orders']:,} · клиенты: {k['customers']:,} · AOV: R$ {k['aov']:.2f}",
+        f"- Repeat purchase rate: {k['repeat_purchase_rate_pct']}% · M1 retention (взвешенно по когортам "
+        f"{COHORT_WINDOW[0]}…{COHORT_WINDOW[1]}): {k['m1_retention_pct']:.2f}%",
+        f"- Доставка: в среднем {k['avg_delivery_days']} дн., медиана {k['median_delivery_days']} дн.; "
+        f"с опозданием {k['late_delivery_rate_pct']}%",
+        f"- Средняя оценка отзыва: {k['avg_review_score']}",
         "",
-        "## Regions",
-        f"- São Paulo (SP) alone accounts for ~{sp_share:.1f}% of revenue.",
-        f"- Highest late-delivery states (sample): "
-        + ", ".join(
-            f"{r.customer_state} ({r.late_rate_pct:.1f}%)"
-            for r in late_by_state.head(3).itertuples()
-        )
+        "## Продажи",
+        f"- Пик — {peak['month']} (Black Friday): R$ {peak['revenue']:,.0f}.",
+        f"- Топ-5 категорий дают {cat.head(5)['revenue_share_pct'].sum():.1f}% выручки; лидер — "
+        f"**{cat.iloc[0]['category']}** ({cat.iloc[0]['revenue_share_pct']:.1f}%).",
+        f"- Среди 15 самых массовых категорий минимальный AOV у **{low_aov['category']}** "
+        f"(R$ {low_aov['aov']:.2f}, {int(low_aov['orders']):,} заказов), максимальный — у "
+        f"**{high_aov['category']}** (R$ {high_aov['aov']:.2f}).",
+        f"- Штат SP даёт {sp_share:.1f}% выручки.",
+        "",
+        "## Доставка и отзывы",
+        "- Штаты с наибольшей долей опозданий: "
+        + ", ".join(f"{t.customer_state} ({t.late_rate_pct:.1f}%)" for t in r["late_by_state"].head(3).itertuples())
         + ".",
+        f"- Оценка: в срок {rbd.loc['on_time', 'avg_review_score']:.2f}, опоздание 1–3 дня "
+        f"{rbd.loc['late_1_3d', 'avg_review_score']:.2f}, 8+ дней {rbd.loc['late_8d_plus', 'avg_review_score']:.2f}; "
+        f"доля оценок 1–2: {rbd.loc['on_time', 'negative_review_pct']:.0f}% → "
+        f"{rbd.loc['late_8d_plus', 'negative_review_pct']:.0f}%.",
+        f"- IQR-выбросы по сроку доставки: {r['delivery_outlier_pct']:.1f}% заказов.",
         "",
-        "## Retention & RFM",
-        f"- Average M1 retention across cohorts ≈ {m1:.2f}% (typical for marketplace one-off purchases).",
-        f"- Champions: {int(champions['customers'].sum()) if len(champions) else 0} customers, "
-        f"{float(champions['revenue_share_pct'].sum()) if len(champions) else 0:.1f}% of revenue.",
-        f"- At Risk: {int(at_risk['customers'].sum()) if len(at_risk) else 0} | "
-        f"Lost: {int(lost['customers'].sum()) if len(lost) else 0}.",
+        "## Клиенты",
+        f"- Повторных покупателей {k['second_orders']:,}; медиана до 2-го заказа {k['median_days_to_2nd_order']} дн., "
+        f"но {k['second_order_within_1d_pct']}% вторых заказов сделаны в течение суток "
+        "(дозаказ, а не возврат клиента).",
+        *[seg_line(name) for name in SEGMENTS],
         "",
-        "## Delivery quality",
-        f"- Late deliveries average review score {late_score:.2f} vs on-time {ontime_score:.2f}.",
-        f"- Delivery-time IQR outliers: {delivery_outlier_pct:.1f}% of orders.",
-        "",
-        "## Price outliers",
-        f"- Item price median R$ {price_stats['price_median']}, P95 R$ {price_stats['price_p95']}.",
-        f"- IQR outliers: {price_stats['outlier_pct']}% of items but "
-        f"{price_stats['outlier_revenue_share_pct']}% of revenue.",
+        "## Цены",
+        f"- Медиана цены товара R$ {ps['price_median']}, P95 R$ {ps['price_p95']}, граница IQR R$ {ps['iqr_upper']}.",
+        f"- IQR-выбросы: {ps['outlier_pct']}% позиций, но {ps['outlier_revenue_share_pct']}% выручки.",
         "",
     ]
-    text = "\n".join(lines)
-    (OUT / "key_findings.md").write_text(text, encoding="utf-8")
-    return text
+    return "\n".join(lines)
 
 
-def export_powerbi_tables(delivered: pd.DataFrame, rfm: pd.DataFrame, orders_df: pd.DataFrame) -> None:
-    """Flattened tables ready for Power BI import."""
-    order_level = (
-        delivered.groupby(
-            [
-                "order_id",
-                "customer_unique_id",
-                "customer_state",
-                "order_status",
-                "order_purchase_timestamp",
-                "year_month",
-            ],
-            as_index=False,
-        )
-        .agg(revenue=("price", "sum"), freight=("freight_value", "sum"), items=("order_item_id", "count"))
-    )
-    order_level = order_level.merge(
-        orders_df[["order_id", "delivery_days", "is_late"]], on="order_id", how="left"
-    )
-    order_level = order_level.merge(
-        rfm[["customer_unique_id", "segment", "R", "F", "M", "RFM_score"]],
-        on="customer_unique_id",
-        how="left",
-    )
-    order_level.to_csv(OUT / "powerbi_orders.csv", index=False)
+def run(data_dir: Path, out_dir: Path, figures: bool = True) -> dict:
+    out_dir.mkdir(parents=True, exist_ok=True)
+    print("Loading data...")
+    tables = load_raw(data_dir)
 
-    item_level = delivered[
-        [
-            "order_id",
-            "order_item_id",
-            "product_id",
-            "category",
-            "customer_unique_id",
-            "customer_state",
-            "price",
-            "freight_value",
-            "order_purchase_timestamp",
-            "year_month",
-        ]
-    ].copy()
-    item_level.to_csv(OUT / "powerbi_order_items.csv", index=False)
+    dq = data_quality_report(tables)
+    dq.to_csv(out_dir / "data_quality_report.csv", index=False)
+    (
+        tables["orders"]["order_status"].value_counts(normalize=True).mul(100).round(2)
+        .rename("pct").rename_axis("order_status").to_csv(out_dir / "order_status_share.csv")
+    )
+
+    print("Building fact tables...")
+    delivered = build_fact(tables)
+    orders = build_orders(delivered, tables["reviews"])
+
+    print("Metrics...")
+    r: dict = {"delivered": delivered, "orders": orders, "data_quality": dq}
+    r["kpis"] = compute_kpis(delivered, orders)
+    r["monthly"] = monthly_dynamics(orders)
+    r["cat"] = category_analysis(delivered)
+    r["region"] = region_analysis(orders)
+    r["late_by_state"] = delivery_by_state(orders)
+    r["review_by_delay"] = review_by_delay(orders)
+    r["delivery_outlier_pct"] = delivery_outlier_pct(orders)
+    r["price_stats"] = price_outliers(delivered)
+    r["rfm"], r["seg"] = rfm_analysis(orders)
+    r["retention_pivot"], r["cohort_long"], r["cohort_sizes"] = cohort_retention(orders)
+    r["kpis"]["m1_retention_pct"] = round(weighted_m1(r["cohort_long"]), 2)
+
+    print("Exports...")
+    pd.Series(r["kpis"], name="value").rename_axis("metric").to_csv(out_dir / "kpi_summary.csv")
+    r["monthly"].to_csv(out_dir / "monthly_sales.csv", index=False)
+    r["cat"].round(2).to_csv(out_dir / "category_sales.csv", index=False)
+    r["region"].round(2).to_csv(out_dir / "region_sales.csv", index=False)
+    r["late_by_state"].round(2).to_csv(out_dir / "delivery_by_state.csv", index=False)
+    r["review_by_delay"].round(2).to_csv(out_dir / "review_by_delay.csv", index=False)
+    pd.Series(r["price_stats"], name="value").rename_axis("metric").to_csv(out_dir / "price_outliers.csv")
+    r["seg"].round(2).to_csv(out_dir / "rfm_segments.csv", index=False)
+    r["retention_pivot"].to_csv(out_dir / "retention_heatmap.csv")
+    r["cohort_long"].round(2).to_csv(out_dir / "cohort_retention_long.csv", index=False)
+    export_powerbi_tables(delivered, orders, r["rfm"], out_dir)
+
+    findings = write_findings(r)
+    (out_dir / "key_findings.md").write_text(findings, encoding="utf-8")
+
+    if figures:
+        print("Figures...")
+        from viz import save_all_figures  # local import: metrics can run without matplotlib
+
+        save_all_figures(r, out_dir / "figures")
+
+    print(findings)
+    shown = out_dir.relative_to(ROOT) if out_dir.resolve().is_relative_to(ROOT) else out_dir
+    print(f"Done. Outputs → {shown}")
+    return r
+
+
+def _utf8_console() -> None:
+    """Windows consoles default to cp1251/cp866 and cannot print "→" or Cyrillic reliably."""
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, "reconfigure"):
+            stream.reconfigure(encoding="utf-8", errors="replace")
 
 
 def main() -> None:
-    print("Loading data...")
-    tables = load_raw()
-    fact = build_fact(tables)
-    print("Data quality...")
-    dq = data_quality_report(tables, fact)
-    print(dq.to_string(index=False))
-
-    print("KPIs...")
-    kpis, delivered, orders_df = compute_kpis(fact)
-    print(kpis)
-
-    print("Monthly / category / region...")
-    monthly_dynamics(delivered)
-    cat = category_analysis(delivered)
-    region = region_analysis(delivered)
-
-    print("Delivery & outliers...")
-    late_by_state, delivery_outlier_pct, rev_cmp = delivery_analysis(
-        orders_df, delivered, tables["reviews"]
-    )
-    price_stats = outlier_price_analysis(delivered)
-
-    print("RFM...")
-    rfm, seg = rfm_analysis(delivered)
-
-    print("Cohorts...")
-    pivot, _cohort = cohort_retention(delivered)
-
-    print("Exports...")
-    export_powerbi_tables(delivered, rfm, orders_df)
-    findings = write_business_insights(
-        kpis, cat, region, seg, pivot, late_by_state, rev_cmp, price_stats, delivery_outlier_pct
-    )
-    print("\n" + findings)
-    print(f"Done. Outputs → {OUT}")
+    _utf8_console()
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument("--data-dir", type=Path, default=ROOT / "data")
+    parser.add_argument("--out-dir", type=Path, default=ROOT / "outputs")
+    parser.add_argument("--no-figures", action="store_true", help="skip charts and the dashboard")
+    args = parser.parse_args()
+    run(args.data_dir, args.out_dir, figures=not args.no_figures)
 
 
 if __name__ == "__main__":

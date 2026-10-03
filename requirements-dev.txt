@@ -1,0 +1,4 @@
+-r requirements.txt
+pytest>=7.0
+jupyter>=1.0        # run / re-execute the notebook
+kaggle>=1.6         # optional: download the dataset from the CLI
